@@ -35,6 +35,12 @@
   #send.on { display: block; }
   #send:active { transform: scale(.96); }
 
+  .bqmode #hint, .bqmode #msg, .bqmode #bq, .bqmode #again { opacity: 0 !important; pointer-events: none !important; }
+  #status { bottom: calc(66px + env(safe-area-inset-bottom)); color: #ffb3d1; font-size: 13px; letter-spacing: .05em; opacity: 0; }
+  .bqmode #status { opacity: 1; }
+  #back { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(26px + env(safe-area-inset-bottom)); font: inherit; font-size: 11px;
+          font-weight: 600; color: #1a0710; background: #ff9ec4; border: 0; border-radius: 7px; padding: 6px 12px; cursor: pointer; display: none; white-space: nowrap; }
+  #back.on { display: block; }
   #sig { position: fixed; right: 12px; bottom: calc(7px + env(safe-area-inset-bottom)); font-size: 9.5px; letter-spacing: .12em;
          color: #fff; opacity: .32; pointer-events: none; }
   #again { position: fixed; left: 8px; bottom: calc(3px + env(safe-area-inset-bottom)); font: inherit; font-size: 10px; letter-spacing: .1em;
@@ -47,7 +53,9 @@
 <canvas id="c" aria-label="An ASCII garden. Tap a pot to grow a flower, tap a flower to pick it."></canvas>
 <div id="hint" class="txt">// <b>tap a pot</b> &mdash; watch it grow</div>
 <div id="msg" class="txt"></div>
-<div id="bq"><div id="chips"></div><button id="send">send to veer &hearts;</button></div>
+<div id="bq"><div id="chips"></div><button id="send">wrap &amp; send to veer &hearts;</button></div>
+<div id="status" class="txt"></div>
+<button id="back">&larr; back to the garden</button>
 <button id="again">&#8635; start over</button>
 <div id="sig">made by veer</div>
 
@@ -90,11 +98,12 @@ function newName(init) {
 const cv = document.getElementById("c"), ctx = cv.getContext("2d");
 const buf = document.createElement("canvas"), b = buf.getContext("2d", { willReadFrequently: true });
 const $ = id => document.getElementById(id);
-const hintEl = $("hint"), msgEl = $("msg"), againEl = $("again"), bqEl = $("bq"), chipsEl = $("chips"), sendEl = $("send");
+const hintEl = $("hint"), msgEl = $("msg"), againEl = $("again"), bqEl = $("bq"), chipsEl = $("chips"), sendEl = $("send"), statusEl = $("status"), backEl = $("back");
 
 let W, H, dpr, fs, cw, chh, cols, rows;
 let bgCh, bgA, bgC, colGlitch;
 let hStreams = [], vStreams = [], flowers = [], parts = [], fly = [], gardenRows = [];
+let bouq = null;
 let allDone = false, msgToken = 0, hoverI = -1, picks = {}, hintStage = 0;
 
 const clamp = (v, a = 0, z = 1) => v < a ? a : v > z ? z : v;
@@ -339,32 +348,94 @@ function bouquetText() {
   const favs = ks.filter(k => picks[k] === max).map(k => KINDS[k].name);
   return "my bouquet 💐\n" + ks.map(k => `${picks[k]} × ${KINDS[k].name}`).join("\n") + `\n\nfavourite: ${favs.join(" & ")} ♥`;
 }
-let sending = false;
-sendEl.addEventListener("click", async () => {
-  if (sending) return; sending = true;
-  const ks = Object.keys(picks).sort((a, c) => picks[c] - picks[a]), max = picks[ks[0]];
-  const favs = ks.filter(k => picks[k] === max).map(k => KINDS[k].name);
-  const link = location.origin + location.pathname + "?b=" + ks.map(k => k + "." + picks[k]).join("-");
-  sendEl.textContent = "sending\u2026";
-  try {
-    const r = await fetch("https://formsubmit.co/ajax/" + CONFIG.mailTo, {
-      method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        _subject: `\ud83d\udc90 ${CONFIG.name} picked a bouquet for you`, _template: "box", _captcha: "false",
-        "a little note": `${CONFIG.name} walked through your garden and picked these \u2665`,
-        "her favourite": favs.join(" & "),
-        "her bouquet": ks.map(k => `${picks[k]} \u00d7 ${KINDS[k].name}`).join(",  "),
-        "watch her bouquet bloom": link
-      })
-    });
-    if (!r.ok) throw new Error("mail failed");
-    sendEl.textContent = "sent to veer \u2665"; burst(W / 2, H - 62, [255, 130, 175], 40);
-  } catch (e) {
-    const text = bouquetText();
-    if (navigator.share) { try { await navigator.share({ text }); } catch (e2) {} }
-    else { try { await navigator.clipboard.writeText(text); sendEl.textContent = "copied \u2713 paste it to veer"; } catch (e2) { sendEl.textContent = "screenshot this for veer \u2665"; } }
+/* ───────── the bouquet: picked flowers get wrapped, photographed and emailed ───────── */
+function startBouquet(p, viewOnly) {
+  const ks = Object.keys(p).sort((a, c) => p[c] - p[a]), left = Object.assign({}, p), kinds = [];
+  for (let more = true; more && kinds.length < 13;) { more = false; for (const k of ks) if (left[k] > 0 && kinds.length < 13) { kinds.push(k); left[k]--; more = true; } }
+  const n = kinds.length, front = n <= 3 ? n : Math.floor(n / 2), back = n - front, slots = [];
+  const arc = (m, span, rf, isFront) => { for (let j = 0; j < m; j++) slots.push({ a: m === 1 ? 0 : (j / (m - 1) - .5) * span * Math.PI / 180, rf, front: isFront }); };
+  arc(front, n <= 3 ? 72 : 66, n <= 3 ? .85 : .66, true); arc(back, 112, 1.04, false);
+  slots.sort((x, y) => (y.front - x.front) || (Math.abs(x.a) - Math.abs(y.a)));        // favourites go front and centre
+  const items = slots.map((sl, i) => Object.assign(sl, { pal: KINDS[kinds[i]], ph: rnd(TAU) }));
+  items.sort((x, y) => (x.front - y.front) || (Math.abs(y.a) - Math.abs(x.a)));         // draw back to front
+  items.forEach((it, i) => it.d = .5 + i * .13);
+  const favs = ks.filter(k => p[k] === p[ks[0]]).map(k => KINDS[k].name), list = ks.map(k => `${p[k]} × ${KINDS[k].name}`), lines = [];
+  for (let i = 0; i < list.length; i += 3) lines.push(list.slice(i, i + 3).join("  ·  "));
+  lines.push(`favourite: ${favs.join(" & ")} ♥`);
+  bouq = { t: 0, T: .5 + n * .13 + 1.3, n, items, viewOnly, picks: Object.assign({}, p), ks, favs, list, lines,
+           title: viewOnly ? `${CONFIG.name.toLowerCase()}'s bouquet, picked for you ♥` : "your bouquet ♥" };
+  document.body.classList.add("bqmode"); backEl.classList.remove("on");
+  statusEl.textContent = viewOnly ? "" : "wrapping your bouquet…";
+}
+function drawBouquet(c, time, dt) {
+  const q = bouq, t = q.t += dt, hr = Math.min(W * .14, H * .085) * (q.n > 8 ? .88 : q.n < 4 ? 1.15 : 1), base = hr * 2.9;
+  const sw = Math.max(hr * .07, cw * 1.35), wrapP = easeBack(clamp(t / .6)), wp = base * .86 * wrapP, hp = base * .92 * wrapP;
+  const poly = (pts, fill) => { c.fillStyle = fill; c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath(); c.fill(); };
+  const grad = (x0, x1, stops) => { const g = c.createLinearGradient(x0, 0, x1, 0); stops.forEach((s, i) => g.addColorStop(i / (stops.length - 1), s)); return g; };
+  c.save(); c.translate(W / 2, H * .62); c.rotate(Math.sin(time * .6) * .012); c.lineCap = "round";
+  poly([[0, hr * .5], [-wp, -hp], [-wp * .3, -hp * 1.14], [wp * .35, -hp * 1.1], [wp, -hp]], grad(-wp, wp, ["#4a2a3c", "#a87890", "#5c3349"]));   // paper, back sheet
+  for (const la of [-1.25, -.75, .8, 1.3]) {                                                                                                          // a few leaves
+    const lp = easeBack(clamp((t - .3) / .6)), len = hr * 2.5 * lp, w = len * .2;
+    c.save(); c.rotate(la - Math.PI / 2); const g = c.createLinearGradient(0, -w, 0, w);
+    g.addColorStop(0, "#86ec8e"); g.addColorStop(.55, "#2f9a44"); g.addColorStop(1, "#14561f");
+    c.fillStyle = g; c.beginPath(); c.moveTo(0, 0); c.quadraticCurveTo(len * .45, -w, len, 0); c.quadraticCurveTo(len * .55, w, 0, 0); c.fill(); c.restore();
   }
-  setTimeout(() => { sending = false; sendEl.innerHTML = "send to veer &hearts;"; }, 4000);
+  for (let k = -2; k <= 2; k++) { c.strokeStyle = k % 2 ? "#63d873" : "#1c6a2c"; c.lineWidth = sw; c.beginPath(); c.moveTo(0, 0); c.lineTo(k * hr * .2 * wrapP, hr * 1.9 * wrapP); c.stroke(); }
+  for (const it of q.items) {                                                                                                                         // stems, then heads
+    const p = easeOut(clamp((t - it.d) / .5)); if (p <= 0) continue;
+    const a = it.a + Math.sin(time * .8 + it.ph) * .025, r = base * it.rf * p; it.x = Math.sin(a) * r; it.y = -Math.cos(a) * r;
+    c.strokeStyle = "#1c6a2c"; c.lineWidth = sw; c.beginPath(); c.moveTo(0, 0); c.lineTo(it.x, it.y); c.stroke();
+  }
+  for (const it of q.items) {
+    const open = easeInOut(clamp((t - it.d - .3) / .7)); if (t <= it.d + .15) continue;
+    c.save(); c.translate(it.x, it.y); c.rotate(it.a * .6); HEADS[it.pal.head](c, hr * (q.n > 5 ? .7 : .85), 1, open, it.pal, time); c.restore();
+  }
+  poly([[0, hr * .5], [-wp, -hp], [wp * .3, -hp * .42]], grad(-wp, wp * .3, ["#c96a92", "#ff9fc2", "#e884ac"]));                                // paper, front flaps
+  poly([[0, hr * .5], [wp, -hp], [-wp * .3, -hp * .42]], grad(-wp * .3, wp, ["#ffaecb", "#ee88ae", "#9c4a70"]));
+  const rp = easeBack(clamp((t - (q.T - .8)) / .5));                                                                                                  // ribbon
+  if (rp > 0) {
+    c.strokeStyle = "#e03a6a"; c.lineWidth = sw * 1.3;
+    for (const sd of [-1, 1]) { c.beginPath(); c.moveTo(0, hr * .45); c.quadraticCurveTo(sd * hr * .5, hr * .9, sd * hr * .45 * rp, hr * (.45 + 1.1 * rp)); c.stroke(); }
+    for (const sd of [-1, 1]) {
+      c.save(); c.translate(sd * hr * .5 * rp, hr * .4); c.rotate(-sd * .35);
+      const g = c.createRadialGradient(0, 0, hr * .04, 0, 0, hr * .55 * rp + .01); g.addColorStop(0, "#7a0f34"); g.addColorStop(.5, "#ff4d7a"); g.addColorStop(1, "#ffa3bd");
+      c.fillStyle = g; c.beginPath(); c.ellipse(0, 0, hr * .52 * rp, hr * .27 * rp, 0, 0, TAU); c.fill(); c.restore();
+    }
+    c.fillStyle = "#ffc2d4"; c.beginPath(); c.arc(0, hr * .42, hr * .17 * rp, 0, TAU); c.fill();
+  }
+  c.restore();
+  if (t >= q.T && !q.burst) { q.burst = true; burst(W / 2, H * .62 - base * .6, [255, 130, 175], 60, 1.4); }
+  if (t >= q.T + .9 && !q.shot) { q.shot = true; if (q.viewOnly) { backEl.textContent = "visit the garden →"; backEl.classList.add("on"); } else q.snap = true; }
+}
+function mailForm(fields, file) {              // a real (hidden) form post, so the screenshot can ride along as an attachment
+  return new Promise(res => {
+    const fr = document.createElement("iframe"); fr.name = "mailer"; fr.style.display = "none"; document.body.appendChild(fr);
+    const fm = document.createElement("form"); fm.action = "https://formsubmit.co/" + CONFIG.mailTo; fm.method = "POST"; fm.enctype = "multipart/form-data"; fm.target = "mailer"; fm.style.display = "none";
+    for (const k in fields) { const i = document.createElement("input"); i.type = "hidden"; i.name = k; i.value = fields[k]; fm.appendChild(i); }
+    if (file) try { const i = document.createElement("input"), dt = new DataTransfer(); i.type = "file"; i.name = "attachment"; dt.items.add(file); i.files = dt.files; fm.appendChild(i); } catch (e) {}
+    document.body.appendChild(fm);
+    let done = false; const fin = () => { if (done) return; done = true; setTimeout(() => { fm.remove(); fr.remove(); }, 800); res(); };
+    setTimeout(() => fr.addEventListener("load", fin), 400); setTimeout(fin, 12000);
+    fm.submit();
+  });
+}
+async function sendBouquet(blob) {
+  const q = bouq; statusEl.textContent = "sending it to veer…";
+  let file = null; try { file = blob && new File([blob], `${CONFIG.name.toLowerCase()}-bouquet.png`, { type: "image/png" }); } catch (e) {}
+  await mailForm({
+    _subject: `💐 ${CONFIG.name} picked a bouquet for you`, _template: "box", _captcha: "false",
+    "a little note": `${CONFIG.name} walked through your garden and wrapped these up for you ♥ (her bouquet is attached)`,
+    "her favourite": q.favs.join(" & "),
+    "her bouquet": q.list.join(",  "),
+    "watch her bouquet bloom": location.origin + location.pathname + "?b=" + q.ks.map(k => k + "." + q.picks[k]).join("-")
+  }, file);
+  if (bouq !== q) return;
+  statusEl.textContent = "sent to veer ♥"; backEl.classList.add("on"); burst(W / 2, H * .5, [255, 130, 175], 40);
+}
+sendEl.addEventListener("click", () => { if (Object.keys(picks).length) startBouquet(picks, false); });
+backEl.addEventListener("click", () => {
+  if (VIEW) { location.href = location.pathname; return; }
+  bouq = null; document.body.classList.remove("bqmode"); backEl.classList.remove("on");
 });
 
 // opened from the email link (?b=rose.2-tulip.1): just show the bouquet she picked
@@ -387,7 +458,7 @@ function flowerAt(x, y) {
 cv.addEventListener("pointermove", e => { hoverI = flowerAt(e.clientX, e.clientY); cv.style.cursor = hoverI >= 0 ? "pointer" : "default"; });
 cv.addEventListener("pointerleave", () => hoverI = -1);
 cv.addEventListener("pointerdown", e => {
-  const i = flowerAt(e.clientX, e.clientY); if (i < 0 || VIEW) return;
+  const i = flowerAt(e.clientX, e.clientY); if (i < 0 || VIEW || bouq) return;
   const f = flowers[i], time = performance.now() / 1000;
   if (f.g >= 1) {                                   // pick it → flies to the bouquet, regrows
     const tip = stemPoint(f, 1, time);
@@ -445,6 +516,7 @@ function frame(now) {
   b.setTransform(1 / cw, 0, 0, 1 / chh, 0, 0);
   const sg = b.createLinearGradient(0, 0, W, 0);
   sg.addColorStop(0, "#000"); sg.addColorStop(.12, "#3c4a30"); sg.addColorStop(.88, "#3c4a30"); sg.addColorStop(1, "#000");
+  if (bouq) drawBouquet(b, time, dt); else {
   for (const row of gardenRows) {
     b.fillStyle = sg; b.fillRect(0, row.ground, W, chh);
     drawGrass(b, row, time);
@@ -458,6 +530,7 @@ function frame(now) {
     b.save(); b.translate(x, y); b.rotate(e * 2.5);
     HEADS[p.f.pal.head](b, p.f.headR * (1 - .55 * e), 1, 1, p.f.pal, time); b.restore();
     if (p.t >= 1) { fly.splice(i, 1); picks[p.f.kind] = (picks[p.f.kind] || 0) + 1; updateBar(); burst(tx, ty, p.f.pal.accent, 10, .5); }
+  }
   }
   const px = b.getImageData(0, 0, cols, rows).data;
 
@@ -496,6 +569,7 @@ function frame(now) {
   ctx.font = `700 ${fs}px ${FONT}`; ctx.textAlign = "left";
   const seed = Math.floor(time * 6), RL = RAMP.length;
   const gz = flowers.filter(f => f.glow > 0).map(f => [f.x - f.headR * 1.3, f.x + f.headR * 1.3, f.potTop - f.hs - f.headR * 2.2, f.ground, f.glow]);
+  if (bouq) { gz.length = 0; gz.push([0, W, 0, H, bouq.t < bouq.T ? .5 : .03]); }
   for (let y = 0; y < rows; y++) {
     const py = y * chh;
     colGlitch.fill(0);
@@ -536,7 +610,14 @@ function frame(now) {
 
   // labels: "tap" on empty pots, the flower's name once it has bloomed
   ctx.textAlign = "center";
-  flowers.forEach((f, i) => {
+  if (bouq) {                                        // caption is drawn on the canvas so it lands in the screenshot
+    const fz = clamp(W / 22, 15, 24);
+    ctx.font = `600 ${fz}px ${FONT}`; ctx.shadowColor = "rgba(255,120,170,.6)"; ctx.shadowBlur = 16; ctx.fillStyle = "#ffe3ee";
+    ctx.fillText(bouq.title, W / 2, H * .07); ctx.shadowBlur = 0;
+    ctx.font = `500 ${fz * .62}px ${FONT}`; ctx.fillStyle = "#b9a7b3";
+    bouq.lines.forEach((l, i) => ctx.fillText(l, W / 2, H * .07 + fz * 1.75 + i * fz * 1.05));
+    if (bouq.snap) { bouq.snap = false; cv.toBlob(sendBouquet, "image/png"); }
+  } else flowers.forEach((f, i) => {
     if (VIEW && f.g === 0) return;
     if (f.g === 0 && !f.growing) {
       ctx.font = `600 ${Math.max(10, fs + 1)}px ${FONT}`;
@@ -553,13 +634,7 @@ function frame(now) {
 }
 
 resize();
-if (VIEW) {
-  const ks = Object.keys(VIEW).sort((a, c) => VIEW[c] - VIEW[a]), favs = ks.filter(k => VIEW[k] === VIEW[ks[0]]).map(k => KINDS[k].name);
-  hintEl.classList.add("off"); cv.style.cursor = "default";
-  msgEl.textContent = `${CONFIG.name.toLowerCase()}'s bouquet, picked for you \u2665\n` + ks.map(k => `${VIEW[k]} \u00d7 ${KINDS[k].name}`).join(" \u00b7 ") + `\nfavourite: ${favs.join(" & ")}`;
-  msgEl.classList.add("on");
-  flowers.forEach((f, i) => { if (VIEW[f.kind]) setTimeout(() => f.growing = true, 600 + i * 350); });
-}
+if (VIEW) startBouquet(VIEW, true);
 requestAnimationFrame(frame);
 </script>
 </body>
