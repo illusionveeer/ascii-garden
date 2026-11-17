@@ -41,6 +41,21 @@
   #back { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(26px + env(safe-area-inset-bottom)); font: inherit; font-size: 11px;
           font-weight: 600; color: #1a0710; background: #ff9ec4; border: 0; border-radius: 7px; padding: 6px 12px; cursor: pointer; display: none; white-space: nowrap; }
   #back.on { display: block; }
+  #modal { position: fixed; inset: 0; display: none; place-items: center; padding: 16px; background: rgba(5, 5, 6, .74); z-index: 5; }
+  #modal.on { display: grid; }
+  .card { width: min(380px, 100%); padding: 20px 18px 16px; border: 1px solid rgba(255, 160, 200, .3); border-radius: 12px;
+          background: #0d0a10; color: #ffe3ee; text-align: center; box-shadow: 0 0 40px rgba(255, 110, 165, .18); }
+  .card h2 { margin: 0 0 6px; font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+  .card p { margin: 0 0 14px; font-size: 11.5px; color: #9a93a3; line-height: 1.5; }
+  .card input { width: 100%; font: inherit; font-size: 16px; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255, 160, 200, .3);
+                background: #050506; color: #ffe3ee; outline: none; }
+  .card input:focus { border-color: #ff9ec4; }
+  .card .row { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+  .card button { font: inherit; font-size: 12px; font-weight: 600; border-radius: 7px; padding: 8px 14px; cursor: pointer; border: 0; }
+  .card .go { background: #ff9ec4; color: #1a0710; }
+  .card .no { background: none; color: #9a93a3; }
+  .card .err { color: #ff8fa8; font-size: 11px; min-height: 14px; margin-top: 6px; }
+  .card iframe { width: 100%; height: 440px; border: 0; border-radius: 8px; background: #fff; }
   #sig { position: fixed; right: 12px; bottom: calc(7px + env(safe-area-inset-bottom)); font-size: 9.5px; letter-spacing: .12em;
          color: #fff; opacity: .32; pointer-events: none; }
   #again { position: fixed; left: 8px; bottom: calc(3px + env(safe-area-inset-bottom)); font: inherit; font-size: 10px; letter-spacing: .1em;
@@ -53,16 +68,32 @@
 <canvas id="c" aria-label="An ASCII garden. Tap a pot to grow a flower, tap a flower to pick it."></canvas>
 <div id="hint" class="txt">// <b>tap a pot</b> &mdash; watch it grow</div>
 <div id="msg" class="txt"></div>
-<div id="bq"><div id="chips"></div><button id="send">wrap &amp; send to veer &hearts;</button></div>
+<div id="bq"><div id="chips"></div><button id="send">send this bouquet to yourself &hearts;</button></div>
 <div id="status" class="txt"></div>
 <button id="back">&larr; back to the garden</button>
 <button id="again">&#8635; start over</button>
 <div id="sig">made by veer</div>
+<div id="modal">
+  <form class="card" id="ask" novalidate>
+    <h2>where should i send your bouquet?</h2>
+    <p>it'll land in your inbox, wrapped and ready to keep &hearts;</p>
+    <input id="her" type="email" inputmode="email" autocomplete="email" placeholder="your email" required>
+    <div class="err" id="err"></div>
+    <div class="row"><button type="button" class="no" id="cancel">not now</button><button type="submit" class="go">send it &hearts;</button></div>
+  </form>
+  <div class="card" id="robot" hidden>
+    <h2>one tiny tick</h2>
+    <p>so the robots can't steal your flowers &#127799;</p>
+    <iframe name="robotframe" title="quick check"></iframe>
+    <div class="row"><button type="button" class="no" id="close">close</button></div>
+  </div>
+</div>
 
 <script>
 /* ───────── edit me ───────── */
 const CONFIG = {
-  name: "Khushi",                       // used in the email subject
+  name: "Khushi",                       // her name, on the bouquet and in the emails
+  from: "veer",
   mailTo: "helloitsveer@gmail.com",     // where her bouquet gets emailed
   to: "",
   message: [
@@ -103,7 +134,7 @@ const hintEl = $("hint"), msgEl = $("msg"), againEl = $("again"), bqEl = $("bq")
 let W, H, dpr, fs, cw, chh, cols, rows;
 let bgCh, bgA, bgC, colGlitch;
 let hStreams = [], vStreams = [], flowers = [], parts = [], fly = [], gardenRows = [];
-let bouq = null;
+let bouq = null, canPick = false;
 let allDone = false, msgToken = 0, hoverI = -1, picks = {}, hintStage = 0;
 
 const clamp = (v, a = 0, z = 1) => v < a ? a : v > z ? z : v;
@@ -330,7 +361,7 @@ function burst(x, y, accent, n, power = 1) {
 const HINTS = [
   "// <b>tap a pot</b> &mdash; watch it grow",
   "// keep going &mdash; <b>plant the whole garden</b>",
-  "// now <b>tap a flower to pick it</b> &hearts; it grows back"
+  "// now <b>pick your favourites</b> for a bouquet &hearts; they grow back"
 ];
 function setHint(n) { if (n > hintStage) { hintStage = n; hintEl.innerHTML = HINTS[n]; } }
 function updateBar() {
@@ -363,12 +394,13 @@ function startBouquet(p, viewOnly) {
   for (let i = 0; i < list.length; i += 3) lines.push(list.slice(i, i + 3).join("  ·  "));
   lines.push(`favourite: ${favs.join(" & ")} ♥`);
   bouq = { t: 0, T: .5 + n * .13 + 1.3, n, items, viewOnly, picks: Object.assign({}, p), ks, favs, list, lines,
-           title: viewOnly ? `${CONFIG.name.toLowerCase()}'s bouquet, picked for you ♥` : "your bouquet ♥" };
+           title: `a bouquet for ${CONFIG.name} \u2665` };
   document.body.classList.add("bqmode"); backEl.classList.remove("on");
   statusEl.textContent = viewOnly ? "" : "wrapping your bouquet…";
 }
 function drawBouquet(c, time, dt) {
   const q = bouq, t = q.t += dt, hr = Math.min(W * .14, H * .085) * (q.n > 8 ? .88 : q.n < 4 ? 1.15 : 1), base = hr * 2.9;
+  q.hr = hr;
   const sw = Math.max(hr * .07, cw * 1.35), wrapP = easeBack(clamp(t / .6)), wp = base * .86 * wrapP, hp = base * .92 * wrapP;
   const poly = (pts, fill) => { c.fillStyle = fill; c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath(); c.fill(); };
   const grad = (x0, x1, stops) => { const g = c.createLinearGradient(x0, 0, x1, 0); stops.forEach((s, i) => g.addColorStop(i / (stops.length - 1), s)); return g; };
@@ -407,33 +439,55 @@ function drawBouquet(c, time, dt) {
   if (t >= q.T && !q.burst) { q.burst = true; burst(W / 2, H * .62 - base * .6, [255, 130, 175], 60, 1.4); }
   if (t >= q.T + .9 && !q.shot) { q.shot = true; if (q.viewOnly) { backEl.textContent = "visit the garden →"; backEl.classList.add("on"); } else q.snap = true; }
 }
-function mailForm(fields, file) {              // a real (hidden) form post, so the screenshot can ride along as an attachment
-  return new Promise(res => {
-    const fr = document.createElement("iframe"); fr.name = "mailer"; fr.style.display = "none"; document.body.appendChild(fr);
-    const fm = document.createElement("form"); fm.action = "https://formsubmit.co/" + CONFIG.mailTo; fm.method = "POST"; fm.enctype = "multipart/form-data"; fm.target = "mailer"; fm.style.display = "none";
-    for (const k in fields) { const i = document.createElement("input"); i.type = "hidden"; i.name = k; i.value = fields[k]; fm.appendChild(i); }
-    if (file) try { const i = document.createElement("input"), dt = new DataTransfer(); i.type = "file"; i.name = "attachment"; dt.items.add(file); i.files = dt.files; fm.appendChild(i); } catch (e) {}
-    document.body.appendChild(fm);
-    let done = false; const fin = () => { if (done) return; done = true; setTimeout(() => { fm.remove(); fr.remove(); }, 800); res(); };
-    setTimeout(() => fr.addEventListener("load", fin), 400); setTimeout(fin, 12000);
-    fm.submit();
-  });
+function postForm(fields, file, target) {
+  const fm = document.createElement("form"); fm.action = "https://formsubmit.co/" + CONFIG.mailTo; fm.method = "POST"; fm.enctype = "multipart/form-data"; fm.target = target; fm.style.display = "none";
+  for (const k in fields) { const i = document.createElement("input"); i.type = "hidden"; i.name = k; i.value = fields[k]; fm.appendChild(i); }
+  if (file) try { const i = document.createElement("input"), dt = new DataTransfer(); i.type = "file"; i.name = "attachment"; dt.items.add(file); i.files = dt.files; fm.appendChild(i); } catch (e) {}
+  document.body.appendChild(fm); fm.submit(); setTimeout(() => fm.remove(), 1500);
 }
-async function sendBouquet(blob) {
-  const q = bouq; statusEl.textContent = "sending it to veer…";
-  let file = null; try { file = blob && new File([blob], `${CONFIG.name.toLowerCase()}-bouquet.png`, { type: "image/png" }); } catch (e) {}
-  await mailForm({
-    _subject: `💐 ${CONFIG.name} picked a bouquet for you`, _template: "box", _captcha: "false",
-    "a little note": `${CONFIG.name} walked through your garden and wrapped these up for you ♥ (her bouquet is attached)`,
-    "her favourite": q.favs.join(" & "),
-    "her bouquet": q.list.join(",  "),
-    "watch her bouquet bloom": location.origin + location.pathname + "?b=" + q.ks.map(k => k + "." + q.picks[k]).join("-")
-  }, file);
-  if (bouq !== q) return;
-  statusEl.textContent = "sent to veer ♥"; backEl.classList.add("on"); burst(W / 2, H * .5, [255, 130, 175], 40);
+const modalEl = $("modal"), askEl = $("ask"), robotEl = $("robot"), herEl = $("her"), errEl = $("err");
+function askEmail() {
+  statusEl.textContent = ""; askEl.hidden = false; robotEl.hidden = true; errEl.textContent = "";
+  modalEl.classList.add("on"); setTimeout(() => herEl.focus(), 300);
 }
+function closeModal(msg) {
+  modalEl.classList.remove("on"); robotEl.querySelector("iframe").src = "about:blank";
+  if (msg !== undefined) statusEl.textContent = msg;
+  backEl.classList.add("on");
+}
+askEl.addEventListener("submit", e => {
+  e.preventDefault();
+  const her = herEl.value.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(her)) { errEl.textContent = "hmm, that email doesn't look right"; return; }
+  const q = bouq, link = location.origin + location.pathname + "?b=" + q.ks.map(k => k + "." + q.picks[k]).join("-");
+  let file = null; try { file = q.blob && new File([q.blob], `${CONFIG.name.toLowerCase()}-bouquet.png`, { type: "image/png" }); } catch (e2) {}
+  // 1) to veer only: her picks + the picture of her bouquet
+  let fr = document.getElementById("mailer");
+  if (!fr) { fr = document.createElement("iframe"); fr.id = fr.name = "mailer"; fr.style.display = "none"; document.body.appendChild(fr); }
+  postForm({
+    _subject: `💐 ${CONFIG.name} picked a bouquet`, _template: "box", _captcha: "false",
+    "her email": her, "her favourite": q.favs.join(" & "), "her bouquet": q.list.join(",  "), "watch it bloom": link,
+    "note": "the picture of her bouquet is attached ♥"
+  }, file, "mailer");
+  // 2) the copy she receives: FormSubmit auto-replies to the "email" field (this needs its one-tick check)
+  postForm({
+    _subject: `🌷 ${CONFIG.name}'s bouquet is on its way`, _template: "box", email: her,
+    _autoresponse: `hi ${CONFIG.name} 🌷\n\nhere's the bouquet you picked, wrapped up just for you:\n${q.list.join("\n")}\n\nwatch it bloom: ${link}\n\nwith love,\n${CONFIG.from} ♥`,
+    _next: new URL("sent.html", location.href).href,
+    "bouquet": q.list.join(",  "), "favourite": q.favs.join(" & "), "watch it bloom": link, "with love": CONFIG.from
+  }, null, "robotframe");
+  askEl.hidden = true; robotEl.hidden = false;
+});
+$("cancel").addEventListener("click", () => closeModal(""));
+$("close").addEventListener("click", () => closeModal("closed before the tick — tap send to try again"));
+addEventListener("message", e => {
+  if (e.data !== "bouquet-sent" || !bouq) return;
+  closeModal("sent ♥ check your inbox (peek in spam too)");
+  burst(W / 2, H * .5, [255, 130, 175], 50);
+});
 sendEl.addEventListener("click", () => { if (Object.keys(picks).length) startBouquet(picks, false); });
 backEl.addEventListener("click", () => {
+  modalEl.classList.remove("on");
   if (VIEW) { location.href = location.pathname; return; }
   bouq = null; document.body.classList.remove("bqmode"); backEl.classList.remove("on");
 });
@@ -460,7 +514,8 @@ cv.addEventListener("pointerleave", () => hoverI = -1);
 cv.addEventListener("pointerdown", e => {
   const i = flowerAt(e.clientX, e.clientY); if (i < 0 || VIEW || bouq) return;
   const f = flowers[i], time = performance.now() / 1000;
-  if (f.g >= 1) {                                   // pick it → flies to the bouquet, regrows
+  if (f.g >= 1 && !canPick) { f.wig = 1; const tp = stemPoint(f, 1, time); burst(tp.x, tp.y, f.pal.accent, 10, .5); }
+  else if (f.g >= 1) {                                   // pick it → flies to the bouquet, regrows
     const tip = stemPoint(f, 1, time);
     fly.push({ f, x0: tip.x, y0: tip.y, t: 0 });
     burst(tip.x, tip.y, f.pal.accent, 14, .6);
@@ -469,7 +524,7 @@ cv.addEventListener("pointerdown", e => {
 });
 againEl.addEventListener("click", () => {
   flowers.forEach(f => { f.g = 0; f.growing = false; f.bloomed = false; f.glow = 0; });
-  allDone = false; msgToken++; picks = {}; fly = []; hintStage = -1;
+  allDone = false; canPick = false; msgToken++; picks = {}; fly = []; hintStage = -1;
   msgEl.classList.remove("on"); againEl.classList.remove("on"); bqEl.classList.remove("on");
   setTimeout(() => { msgEl.textContent = ""; setHint(0); hintEl.classList.remove("off"); }, 900);
 });
@@ -484,6 +539,10 @@ async function typeMessage() {
     await new Promise(r => setTimeout(r, ch === "\n" ? 420 : 48));
   }
   againEl.classList.add("on");
+  await new Promise(r => setTimeout(r, 2800)); if (my !== msgToken) return;
+  msgEl.classList.remove("on");                              // garden done → now the picking starts
+  await new Promise(r => setTimeout(r, 1200)); if (my !== msgToken) return;
+  canPick = true; hintEl.classList.remove("off"); setHint(2); updateBar();
 }
 
 /* ───────── loop ───────── */
@@ -500,7 +559,7 @@ function frame(now) {
       if (Math.random() < .9) spawnIn(f, time);
       if (f.g >= 1) {
         f.growing = false; const tip = stemPoint(f, 1, time); burst(tip.x, tip.y, f.pal.accent, f.bloomed ? 16 : 36);
-        if (!f.bloomed) { f.bloomed = true; if (VIEW) continue; setHint(2); if (!bqEl.classList.contains("on")) updateBar(); }
+        if (!f.bloomed) f.bloomed = true;
       }
     } else f.glow = Math.max(f.g >= 1 ? .03 : 0, f.glow - dt * .8);
     f.wig = Math.max(0, f.wig - dt * 1.3);
@@ -616,7 +675,12 @@ function frame(now) {
     ctx.fillText(bouq.title, W / 2, H * .07); ctx.shadowBlur = 0;
     ctx.font = `500 ${fz * .62}px ${FONT}`; ctx.fillStyle = "#b9a7b3";
     bouq.lines.forEach((l, i) => ctx.fillText(l, W / 2, H * .07 + fz * 1.75 + i * fz * 1.05));
-    if (bouq.snap) { bouq.snap = false; cv.toBlob(sendBouquet, "image/png"); }
+    const fa = clamp((bouq.t - bouq.T + .4) / .8);
+    if (fa > 0) {
+      ctx.font = `italic 500 ${fz * .78}px ${FONT}`; ctx.fillStyle = `rgba(255,179,209,${fa})`;
+      ctx.fillText(`\u2014 from ${CONFIG.from}, with love \u2665`, W / 2, H * .62 + bouq.hr * 2.3);
+    }
+    if (bouq.snap) { bouq.snap = false; cv.toBlob(bl => { if (bouq) { bouq.blob = bl; askEmail(); } }, "image/png"); }
   } else flowers.forEach((f, i) => {
     if (VIEW && f.g === 0) return;
     if (f.g === 0 && !f.growing) {
